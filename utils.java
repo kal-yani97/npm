@@ -1,64 +1,258 @@
 package sp.sd.nexusartifactuploader;
 
-import com.google.common.base.Strings;
-import hudson.model.TaskListener;
-import org.sonatype.aether.artifact.Artifact;
-import org.sonatype.aether.util.artifact.DefaultArtifact;
+import hudson.*;
+import hudson.model.*;
+import hudson.remoting.Callable;
+import hudson.security.ACL;
+import hudson.tasks.BuildStepDescriptor;
+import hudson.tasks.Builder;
+import hudson.util.FormValidation;
+import hudson.util.Secret;
+import hudson.util.ListBoxModel;
+import jenkins.tasks.SimpleBuildStep;
+import org.kohsuke.stapler.AncestorInPath;
+import org.kohsuke.stapler.DataBoundConstructor;
+import org.kohsuke.stapler.QueryParameter;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import edu.umd.cs.findbugs.annotations.CheckForNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
+
+import org.jenkinsci.remoting.RoleChecker;
+import com.cloudbees.plugins.credentials.CredentialsMatchers;
+import com.cloudbees.plugins.credentials.CredentialsProvider;
+import com.cloudbees.plugins.credentials.common.StandardCredentials;
+import com.cloudbees.plugins.credentials.common.StandardUsernameCredentials;
+import com.cloudbees.plugins.credentials.common.StandardUsernameListBoxModel;
+import com.cloudbees.plugins.credentials.common.StandardUsernamePasswordCredentials;
+import com.google.common.base.Strings;
 
 
-/**
- * Created by suresh on 5/20/2016.
- */
-public final class Utils {
-    private Utils() {
+public class NexusArtifactUploader extends Builder implements SimpleBuildStep, Serializable {
+    private static final long serialVersionUID = 1;
+
+    private final String nexusVersion;
+    private final String protocol;
+    private final String nexusUrl;
+    private final String groupId;
+    private final String version;
+    private final String repository;
+    private final List<Artifact> artifacts;
+
+    @CheckForNull
+    private final String credentialsId;
+
+    // Fields in config.jelly must match the parameter names in the "DataBoundConstructor"
+    @DataBoundConstructor
+    public NexusArtifactUploader(String nexusVersion, String protocol, String nexusUrl, String groupId,
+                                 String version, String repository, String credentialsId, List<Artifact> artifacts) {
+        this.nexusVersion = nexusVersion;
+        this.protocol = protocol;
+        this.nexusUrl = nexusUrl;
+        this.groupId = groupId;
+        this.version = version;
+        this.repository = repository;
+        this.credentialsId = credentialsId;
+        this.artifacts = artifacts;
     }
 
-    public static Artifact toArtifact(sp.sd.nexusartifactuploader.Artifact artifact, String groupId, String version, File artifactFile) {
-        return new DefaultArtifact(groupId, artifact.getArtifactId(), artifact.getClassifier(),
-                artifact.getType(), version).setFile(artifactFile);
+    public String getNexusVersion() {
+        return nexusVersion;
     }
 
-    public static Boolean uploadArtifacts(TaskListener Listener, String ResolvedNexusUser,
-                                         String ResolvedNexusPassword, String ResolvedNexusUrl,
-                                         String ResolvedRepository, String ResolvedProtocol,
-                                         String ResolvedNexusVersion, Artifact... artifacts) throws IOException {
-        Boolean result = false;
-        if (Strings.isNullOrEmpty(ResolvedNexusUrl)) {
-            Listener.getLogger().println("Url of the Nexus is empty. Please enter Nexus Url.");
-            return false;
-        }
+    public String getProtocol() {
+        return protocol;
+    }
+
+    public String getNexusUrl() {
+        return nexusUrl;
+    }
+
+    public String getGroupId() {
+        return groupId;
+    }
+
+    public String getVersion() {
+        return version;
+    }
+
+    public String getRepository() {
+        return repository;
+    }
+
+    public List<Artifact> getArtifacts() {
+        return artifacts;
+    }
+
+    @Nullable
+    public String getCredentialsId() {
+        return credentialsId;
+    }
+
+    public StandardUsernameCredentials getCredentials(Item project) {
+        StandardUsernameCredentials credentials = null;
         try {
-            for (Artifact artifact : artifacts) {
-                Listener.getLogger().println("Uploading artifact " + artifact.getFile().getName() + " started....");
-                Listener.getLogger().println("GroupId: " + artifact.getGroupId());
-                Listener.getLogger().println("ArtifactId: " + artifact.getArtifactId());
-                Listener.getLogger().println("Classifier: " + artifact.getClassifier());
-                Listener.getLogger().println("Type: " + artifact.getExtension());
-                Listener.getLogger().println("Version: " + artifact.getVersion());
-                Listener.getLogger().println("File: " + artifact.getFile().getName());
-                Listener.getLogger().println("Repository:" + ResolvedRepository);
-            }
-            String repositoryPath = "/content/repositories/";
-            if (ResolvedNexusVersion.contentEquals("nexus3")) {
-                repositoryPath = "/repository/";
-            }
-            ArtifactRepositoryManager artifactRepositoryManager = new ArtifactRepositoryManager(ResolvedProtocol + "://"
-                    + ResolvedNexusUrl + repositoryPath + ResolvedRepository, ResolvedNexusUser,
-                    ResolvedNexusPassword, ResolvedRepository, Listener);
 
-
-            artifactRepositoryManager.upload(artifacts);
-            for (Artifact artifact : artifacts) {
-                Listener.getLogger().println("Uploading artifact " + artifact.getFile().getName() + " completed.");
+            credentials = credentialsId == null ? null : this.lookupSystemCredentials(credentialsId, project);
+            if (credentials != null) {
+                return credentials;
             }
-            result = true;
-        } catch (Exception e) {
-            Listener.getLogger().println(e.getMessage());
-            throw new IOException(e.getMessage());
+        } catch (Throwable t) {
+
         }
-        return result;
+
+        return credentials;
     }
+
+    public static StandardUsernameCredentials lookupSystemCredentials(String credentialsId, Item project) {
+        return CredentialsMatchers.firstOrNull(
+                CredentialsProvider
+                        .lookupCredentials(StandardUsernameCredentials.class, project, ACL.SYSTEM, Collections.emptyList()),
+                CredentialsMatchers.withId(credentialsId)
+        );
+    }
+
+    public String getUsername(EnvVars environment, Item project) {
+        String Username = "";
+        if (!Strings.isNullOrEmpty(credentialsId)) {
+            Username = this.getCredentials(project).getUsername();
+        }
+        return Username;
+    }
+
+    public String getPassword(EnvVars environment, Item project) {
+        String Password = "";
+        if (!Strings.isNullOrEmpty(credentialsId)) {
+            Password = Secret.toString(StandardUsernamePasswordCredentials.class.cast(this.getCredentials(project)).getPassword());
+        }
+        return Password;
+    }
+
+    @Override
+    public void perform(Run build, FilePath workspace, Launcher launcher, final TaskListener listener) throws IOException, InterruptedException {
+        final EnvVars envVars = build.getEnvironment(listener);
+        final Item project = build.getParent();
+        final String username = getUsername(envVars, project);
+        final String password = getPassword(envVars, project);
+        final String nexusUrl = envVars.expand(getNexusUrl());
+        final String repository = envVars.expand(getRepository());
+        final String expandedVersion = envVars.expand(getVersion());
+        final String expandedGroupId = envVars.expand(getGroupId());
+
+        if (artifacts == null || artifacts.size() == 0) {
+            throw new IOException("No artifacts defined. Artifacts must be defined in addition to group id. See https://plugins.jenkins.io/nexus-artifact-uploader");
+        }
+
+        final Map<Artifact, File> artifactToFile = new LinkedHashMap<>();
+        for (Artifact artifact : this.artifacts) {
+            FilePath artifactFilePath = new FilePath(workspace, envVars.expand(artifact.getFile()));
+            artifactToFile.put(artifact.expandVars(envVars), new File(artifactFilePath.getRemote()));
+        }
+
+        workspace.act(new Callable<Boolean, IOException>() {
+            private static final long serialVersionUID = 1L;
+
+            @Override
+            public Boolean call() throws IOException {
+                final List<org.sonatype.aether.artifact.Artifact> nexusArtifacts = new ArrayList<>(artifactToFile.size());
+                for (final Map.Entry<Artifact, File> entry : artifactToFile.entrySet()) {
+                    Artifact artifact = entry.getKey();
+                    File file = entry.getValue();
+                    if (!file.exists()) {
+                        listener.getLogger().println(file.getName() + " file doesn't exist");
+                        throw new IOException(file.getName() + " file doesn't exist");
+                    } else {
+                        nexusArtifacts.add(Utils.toArtifact(artifact, expandedGroupId, expandedVersion, file));
+                    }
+                }
+                return Utils.uploadArtifacts(listener, username, password,
+                        nexusUrl, repository, protocol, nexusVersion,
+                        nexusArtifacts.toArray(new org.sonatype.aether.artifact.Artifact[0]));
+            }
+
+            @Override
+            public void checkRoles(RoleChecker checker) throws SecurityException {
+
+            }
+        });
+    }
+
+    @Override
+    public DescriptorImpl getDescriptor() {
+        return (DescriptorImpl) super.getDescriptor();
+    }
+
+    @Extension
+    public static final class DescriptorImpl<C extends StandardCredentials> extends BuildStepDescriptor<Builder> {
+
+        public boolean isApplicable(Class<? extends AbstractProject> aClass) {
+            return true;
+        }
+
+        public String getDisplayName() {
+            return "Nexus artifact uploader";
+        }
+
+        public FormValidation doCheckNexusUrl(@QueryParameter String value) {
+            if (value.length() == 0) {
+                return FormValidation.error("URL must not be empty");
+            }
+
+            if (value.startsWith("http://") || value.startsWith("https://")) {
+                return FormValidation.error("URL must not start with http:// or https://");
+            }
+
+            return FormValidation.ok();
+        }
+
+        public FormValidation doCheckGroupId(@QueryParameter String value) {
+            if (value.length() == 0) {
+                return FormValidation.error("GroupId must not be empty");
+            }
+            return FormValidation.ok();
+        }
+
+        public FormValidation doCheckVersion(@QueryParameter String value) {
+            if (value.length() == 0) {
+                return FormValidation.error("Version must not be empty");
+            }
+            return FormValidation.ok();
+        }
+
+        public FormValidation doCheckRepository(@QueryParameter String value) {
+            if (value.length() == 0) {
+                return FormValidation.error("Repository must not be empty");
+            }
+            return FormValidation.ok();
+        }
+
+        public ListBoxModel doFillCredentialsIdItems(@AncestorInPath Item owner) {
+            if (owner == null || !owner.hasPermission(Item.CONFIGURE)) {
+                return new ListBoxModel();
+            }
+            return new StandardUsernameListBoxModel().withEmptySelection().withAll(CredentialsProvider.lookupCredentials(StandardUsernamePasswordCredentials.class, owner, ACL.SYSTEM, Collections.emptyList()));
+        }
+
+        public ListBoxModel doFillNexusVersionItems() {
+            ListBoxModel items = new ListBoxModel();
+            items.add("NEXUS2", "nexus2");
+            items.add("NEXUS3", "nexus3");
+            return items;
+        }
+
+        public ListBoxModel doFillProtocolItems() {
+            ListBoxModel items = new ListBoxModel();
+            items.add("HTTP", "http");
+            items.add("HTTPS", "https");
+            return items;
+        }
+    }
+
 }
